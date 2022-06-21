@@ -577,6 +577,19 @@ public class QueryPlan {
         QueryOperator minOp = new SequentialScanOperator(this.transaction, table);
 
         // TODO(proj3_part2): implement
+        int minCost = minOp.estimateIOCost();
+        int minSelectPredicateIdx = -1;
+        for(int i : getEligibleIndexColumns(table)) {
+            SelectPredicate sp = selectPredicates.get(i);
+            QueryOperator curOp = new IndexScanOperator(transaction, sp.tableName, sp.column, sp.operator, sp.value);
+            int curCost = curOp.estimateIOCost();
+            if(curCost < minCost) {
+                minCost = curCost;
+                minOp = curOp;
+                minSelectPredicateIdx = i;
+            }
+        }
+        addEligibleSelections(minOp, minSelectPredicateIdx);
         return minOp;
     }
 
@@ -646,6 +659,31 @@ public class QueryPlan {
         //      calculate the cheapest join with the new table (the one you
         //      fetched an operator for from pass1Map) and the previously joined
         //      tables. Then, update the result map if needed.
+        for(Map.Entry<Set<String>, QueryOperator> entry : prevMap.entrySet()) {
+            Set<String> tables = entry.getKey();
+            QueryOperator prevOp = entry.getValue();
+            for(JoinPredicate jp : joinPredicates) {
+                Set<String> newTables = new HashSet<>();
+                QueryOperator joinOp;
+                if(tables.contains(jp.leftTable) && !tables.contains(jp.rightTable)) {
+                    Set<String> rightSingleTable = new HashSet<>(Collections.singletonList(jp.rightTable));
+                    joinOp = minCostJoinType(prevOp, pass1Map.get(rightSingleTable), jp.leftColumn, jp.rightColumn);
+                    newTables.addAll(tables);
+                    newTables.addAll(rightSingleTable);
+                } else if(tables.contains(jp.rightTable) && !tables.contains(jp.leftTable)) {
+                    Set<String> leftSingleTable = new HashSet<>(Collections.singletonList(jp.leftTable));
+                    joinOp = minCostJoinType(pass1Map.get(leftSingleTable), prevOp, jp.leftColumn, jp.rightColumn);
+                    newTables.addAll(leftSingleTable);
+                    newTables.addAll(tables);
+                } else {
+                    continue;
+                }
+
+                if(!result.containsKey(newTables) || result.get(newTables).estimateIOCost() > joinOp.estimateIOCost()) {
+                    result.put(newTables, joinOp);
+                }
+            }
+        }
         return result;
     }
 
@@ -695,7 +733,22 @@ public class QueryPlan {
         // Set the final operator to the lowest cost operator from the last
         // pass, add group by, project, sort and limit operators, and return an
         // iterator over the final operator.
-        return this.executeNaive(); // TODO(proj3_part2): Replace this!
+        Map<Set<String>, QueryOperator> pass1Map = new HashMap<>();
+        for(String table : tableNames) {
+            pass1Map.put(new HashSet<>(Collections.singletonList(table)), minCostSingleAccess(table));
+        }
+        int N = tableNames.size();
+        Map<Set<String>, QueryOperator> prevMap = pass1Map;
+        for(int i=0; i<N-1; i++) {
+            prevMap = minCostJoins(prevMap, pass1Map);
+        }
+        finalOperator = minCostOperator(prevMap);
+        this.addGroupBy();
+        this.addProject();
+        this.addSort();
+        this.addLimit();
+        return finalOperator.iterator();
+        // return this.executeNaive(); // TODO(proj3_part2): Replace this!
     }
 
     // EXECUTE NAIVE ///////////////////////////////////////////////////////////
